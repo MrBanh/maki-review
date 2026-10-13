@@ -1,0 +1,7 @@
+# maki-review: /review command — TUI for reviewing working-tree changes
+# vs HEAD with inline diff comments, sent back to a new maki session.
+#
+# run: all git plumbing (diff, log, show, ls-files, rev-parse) goes through
+#   maki.fn.jobstart/maki.fn.jobwait. No fs/env/net/provider API use.
+[permissions]
+run = true
