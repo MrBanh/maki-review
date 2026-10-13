@@ -1633,9 +1633,9 @@ local function open_review()
 
     -- Comment editor owns the keyboard while open.
     if state.centry then
-      if key == "enter" then
+      if key == "<CR>" then
         save_comment(state)
-      elseif key == "esc" or key == "ctrl+c" then
+      elseif key == "<Esc>" or key == "<C-c>" then
         state.centry = nil
         redraw(state)
       else
@@ -1646,29 +1646,29 @@ local function open_review()
       continue
     end
 
-    if key == "up" or key == "k" then
+    if key == "<Up>" or key == "k" then
       move(state, -1)
-    elseif key == "down" or key == "j" then
+    elseif key == "<Down>" or key == "j" then
       move(state, 1)
-    elseif key == "pageup" then
+    elseif key == "<PageUp>" then
       move(state, -1, math.max(active_height(state) - 2, 1))
-    elseif key == "pagedown" then
+    elseif key == "<PageDown>" then
       move(state, 1, math.max(active_height(state) - 2, 1))
-    elseif key == "g" or key == "home" then
+    elseif key == "g" or key == "<Home>" then
       jump(state, false)
-    elseif key == "G" or key == "end" then
+    elseif key == "G" or key == "<End>" then
       jump(state, true)
-    elseif key == "tab" then
+    elseif key == "<Tab>" then
       set_pane(state, state.pane == "diff" and state.src or PANE_NEXT[state.pane])
     elseif key == "s" then
       if submit(state) then
         return
       end
       redraw(state)
-    elseif key == "q" or key == "ctrl+c" then
+    elseif key == "q" or key == "<C-c>" then
       break
     elseif state.pane ~= "diff" then -- one of the left panels
-      if key == "enter" or key == "l" or key == "right" then
+      if key == "<CR>" or key == "l" or key == "<Right>" then
         if state.pane == "commits" and not state.commit then
           enter_commit(state)
         elseif state.pane == "comments" then
@@ -1686,7 +1686,7 @@ local function open_review()
         delete_selected_comment(state)
       elseif key == "r" then
         refresh(state)
-      elseif key == "h" or key == "left" then
+      elseif key == "h" or key == "<Left>" then
         local cursor, row_map = active_view(state)
         local sel = row_map[cursor]
         local set = state.pane == "commits" and state.ccollapsed
@@ -1701,7 +1701,7 @@ local function open_review()
         elseif state.pane == "commits" and state.commit then
           leave_commit(state)
         end
-      elseif key == "esc" then
+      elseif key == "<Esc>" then
         if state.pane == "commits" and state.commit then
           leave_commit(state)
         else
@@ -1709,7 +1709,7 @@ local function open_review()
         end
       end
     else -- diff pane
-      if key == "c" or key == "enter" then
+      if key == "c" or key == "<CR>" then
         open_comment_editor(state)
       elseif key == "v" then
         if state.vstart then
@@ -1721,7 +1721,7 @@ local function open_review()
         redraw(state)
       elseif key == "d" then
         delete_comment(state)
-      elseif key == "h" or key == "left" or key == "esc" then
+      elseif key == "h" or key == "<Left>" or key == "<Esc>" then
         if state.vstart then
           state.vstart = nil
           redraw(state)
