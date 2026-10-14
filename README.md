@@ -8,6 +8,10 @@ Ported to a maki package from [maki-review](https://github.com/Asaf51/maki-revie
 by Asaf51, with key handling updated to maki's canonical key spellings
 (`<CR>`, `<Esc>`, `<Up>`, etc.).
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Features
 
 - **Files** — changed files vs `HEAD` (staged, unstaged, untracked) as a collapsible tree
