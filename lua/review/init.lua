@@ -217,27 +217,58 @@ local function blend(base, top, t)
   )
 end
 
-local tints -- { add, del, sel } computed lazily from the theme background
+local tints -- { add, del, sel, com } computed lazily from the theme
 local function get_tints()
   if tints then
     return tints
   end
   local bg = maki.ui.theme_color("background")
-  -- Non-truecolor themes answer "default" or a palette index ("4") rather
-  -- than "#rrggbb", which hex_rgb cannot parse (nil channels crash blend
-  -- and strand the windows). Tints are decorative and every use tolerates
-  -- nil, so skip them on such themes.
-  if type(bg) ~= "string" or not bg:match("^#%x%x%x%x%x%x$") then
-    tints = {}
+  -- Truecolor themes answer "#rrggbb": blend the washes ourselves.
+  if type(bg) == "string" and bg:match("^#%x%x%x%x%x%x$") then
+    tints = {
+      add = blend(bg, ADD_TINT[1], ADD_TINT[2]),
+      del = blend(bg, DEL_TINT[1], DEL_TINT[2]),
+      sel = blend(bg, SEL_TINT[1], SEL_TINT[2]),
+      com = blend(bg, COM_TINT[1], COM_TINT[2]),
+    }
     return tints
   end
+  -- Other themes answer "default" or a palette index, which hex_rgb cannot
+  -- parse (nil channels crash blend and strand the windows). Borrow the
+  -- channels of the theme's own diff styles instead, which the host resolves
+  -- for every palette. A missing channel is nil; render_diff then degrades
+  -- to a uniform no-bg/no-fg row rather than a half-tinted one.
+  local function style_part(name, part)
+    if maki.ui.theme_style then
+      local ok, st = pcall(maki.ui.theme_style, name)
+      if ok and type(st) == "table" then
+        return st[part]
+      end
+    end
+    return nil
+  end
+  local function kind(style)
+    return { bg = style_part(style, "bg"), fg = style_part(style, "fg") }
+  end
   tints = {
-    add = blend(bg, ADD_TINT[1], ADD_TINT[2]),
-    del = blend(bg, DEL_TINT[1], DEL_TINT[2]),
-    sel = blend(bg, SEL_TINT[1], SEL_TINT[2]),
-    com = blend(bg, COM_TINT[1], COM_TINT[2]),
+    add = kind("diff_new"),
+    del = kind("diff_old"),
+    sel = {
+      bg = style_part("selected", "bg") or style_part("item_selected", "bg"),
+      fg = style_part("selected", "fg") or style_part("item_selected", "fg"),
+    },
+    com = { bg = style_part("warning", "bg") },
   }
   return tints
+end
+
+local function tint_bg_of(t)
+  if type(t) == "string" then
+    return t
+  elseif type(t) == "table" then
+    return t.bg
+  end
+  return nil
 end
 
 --- git plumbing ------------------------------------------------------------
@@ -673,20 +704,102 @@ local function restyle(spans, style)
   return out
 end
 
+-- Named-style lookup, cached. with_bg/flatten_bg use it to keep a named
+-- style's foreground when rebuilding the span as a table.
+local style_cache = {}
+local function resolve_style(name)
+  local hit = style_cache[name]
+  if hit == nil then
+    hit = false
+    if maki.ui.theme_style then
+      local ok, st = pcall(maki.ui.theme_style, name)
+      if ok and type(st) == "table" then
+        hit = st
+      end
+    end
+    style_cache[name] = hit
+  end
+  return hit ~= false and hit or nil
+end
+
+local function copy_mods(dst, src)
+  dst.fg = src.fg
+  dst.bold = src.bold
+  dst.italic = src.italic
+  dst.underline = src.underline
+  return dst
+end
+
 -- Returns copies of `spans` with `bg` added to each span's style,
--- keeping syntax foreground colors.
+-- keeping syntax foreground colors (and named styles' foregrounds, so the
+-- +/- markers keep their diff colors under the wash).
 local function with_bg(spans, bg)
   local out = {}
   for _, sp in ipairs(spans) do
     local s = sp[2]
     local ns = { bg = bg }
     if type(s) == "table" then
-      ns.fg = s.fg
-      ns.bold = s.bold
-      ns.italic = s.italic
-      ns.underline = s.underline
+      copy_mods(ns, s)
+    elseif type(s) == "string" and s ~= "" then
+      local st = resolve_style(s)
+      if st then
+        copy_mods(ns, st)
+      end
     end
     out[#out + 1] = { sp[1], ns }
+  end
+  return out
+end
+
+-- Returns copies of `spans` where spans with no intrinsic foreground take
+-- `fg` (backgrounds dropped). Keeps syntax highlighting where present;
+-- fills the gutters and plain text so an add/del row reads end to end.
+local function with_fg(spans, fg)
+  local out = {}
+  for _, sp in ipairs(spans) do
+    local s = sp[2]
+    if type(s) == "table" and s.fg ~= nil then
+      out[#out + 1] = { sp[1], copy_mods({}, s) }
+    elseif type(s) == "string" and s ~= "" then
+      local st = resolve_style(s)
+      if st and st.fg ~= nil then
+        out[#out + 1] = { sp[1], copy_mods({}, st) }
+      else
+        local ns = { fg = fg }
+        if st then
+          ns.bold = st.bold
+          ns.italic = st.italic
+          ns.underline = st.underline
+        end
+        out[#out + 1] = { sp[1], ns }
+      end
+    else
+      out[#out + 1] = { sp[1], { fg = fg } }
+    end
+  end
+  return out
+end
+
+-- Returns copies of `spans` with every background removed, keeping
+-- foregrounds. Used when no tint bg is available: named styles like "dim"
+-- may carry their own bg on some themes, which would otherwise tint only
+-- the line number instead of the whole row.
+local function flatten_bg(spans)
+  local out = {}
+  for _, sp in ipairs(spans) do
+    local s = sp[2]
+    if type(s) == "table" then
+      out[#out + 1] = { sp[1], copy_mods({}, s) }
+    elseif type(s) == "string" and s ~= "" then
+      local st = resolve_style(s)
+      if st then
+        out[#out + 1] = { sp[1], copy_mods({}, st) }
+      else
+        out[#out + 1] = sp
+      end
+    else
+      out[#out + 1] = sp
+    end
   end
   return out
 end
@@ -1016,18 +1129,28 @@ local function render_diff(state)
       spans[#spans + 1] = { sp[1], sp[2] }
     end
 
-    -- Full-row background tint by line kind / selection.
-    local bg = nil
-    if selected then
-      bg = tint.sel
-    elseif dl.kind == "add" then
-      bg = tint.add
-    elseif dl.kind == "del" then
-      bg = tint.del
+    -- Full-row tint by line kind / selection (bg first, theme diff fg as
+    -- fallback so add/del lines still read end to end on palettes without
+    -- tintable backgrounds).
+    local tint_bg, tint_fg = nil, nil
+    local t = selected and tint.sel
+      or dl.kind == "add" and tint.add
+      or dl.kind == "del" and tint.del
+      or nil
+    if type(t) == "string" then
+      tint_bg = t
+    elseif type(t) == "table" then
+      tint_bg, tint_fg = t.bg, t.fg
     end
-    if bg then
-      spans = with_bg(spans, bg)
-      pad_spans(spans, width, { bg = bg })
+    if tint_bg then
+      spans = with_bg(spans, tint_bg)
+      pad_spans(spans, width, { bg = tint_bg })
+    elseif tint_fg then
+      spans = with_fg(spans, tint_fg)
+    else
+      -- No tint channels on this theme: strip intrinsic span backgrounds
+      -- so the row stays uniform instead of tinting just the line number.
+      spans = flatten_bg(spans)
     end
 
     lines[#lines + 1] = spans
@@ -1057,7 +1180,7 @@ local function render_diff(state)
     if c then
       local nxt = dlines[i + 1]
       if not (nxt and nxt.kind ~= "hunk" and covers(c, nxt)) then
-        local cbg = tint.com
+        local cbg = tint_bg_of(tint.com)
         local bar = { fg = COM_TINT[1], bg = cbg, bold = true }
         local txt = cbg and { bg = cbg, bold = true } or "warning"
         local hdr = { { "    ┏ ", bar }, { "● Comment", bar } }
@@ -1124,7 +1247,7 @@ local function render_comment_detail(state)
   lines[#lines + 1] = { { " " .. c.file, "accent" } }
   lines[#lines + 1] = { { " " .. where, "dim" } }
   lines[#lines + 1] = { { "", "" } }
-  local cbg = tint.com
+  local cbg = tint_bg_of(tint.com)
   local bar = { fg = COM_TINT[1], bg = cbg, bold = true }
   local txt = cbg and { bg = cbg, bold = true } or "warning"
   for _, cl in ipairs(wrap(c.text, math.max(width - 8, 20))) do
@@ -1664,7 +1787,9 @@ local HELP_SECTIONS = {
   } },
 }
 
--- Centered modal listing the effective keybinds; any key dismisses it.
+-- Centered modal listing the effective keybinds. j/k (or the configured
+-- move keys) scroll when the list overflows; help/back/quit or any
+-- unhandled key dismisses it.
 local function show_help()
   local rows = {}
   local kw = 0
@@ -1691,22 +1816,57 @@ local function show_help()
     end
   end
   local term = maki.ui.terminal_size()
+  local height = math.min(#rows, math.max(term.rows - 4, 5))
   local win = maki.ui.open_win(buf, {
     title = " Keys ",
     width = math.min(width + 2, math.max(term.cols - 4, 20)),
-    height = math.min(#rows, math.max(term.rows - 4, 5)),
+    height = height,
     border = "rounded",
     focus = true,
+    cursor_line = true,
     zindex = 90,
-    footer = { { key_label("help"), "close" } },
+    footer = {
+      { key_label("move_up") .. "/" .. key_label("move_down"), "scroll" },
+      { key_label("help"), "close" },
+    },
   })
+  local cur = 1
+  local function clamp(n)
+    return math.max(1, math.min(n, buf:len()))
+  end
+  win:set_cursor(cur)
   while win:is_open() do
     local ev = win:recv()
     if not ev then
       break
     end
-    if ev.type == "key" or ev.type == "close" then
+    if ev.type == "close" then
       break
+    end
+    if ev.type ~= "key" then
+      continue
+    end
+    local key = ev.key
+    if hit("move_up", key) then
+      cur = clamp(cur - 1)
+      win:set_cursor(cur)
+    elseif hit("move_down", key) then
+      cur = clamp(cur + 1)
+      win:set_cursor(cur)
+    elseif hit("page_up", key) then
+      cur = clamp(cur - math.max(height - 2, 1))
+      win:set_cursor(cur)
+    elseif hit("page_down", key) then
+      cur = clamp(cur + math.max(height - 2, 1))
+      win:set_cursor(cur)
+    elseif hit("jump_top", key) then
+      cur = 1
+      win:set_cursor(cur)
+    elseif hit("jump_bottom", key) then
+      cur = buf:len()
+      win:set_cursor(cur)
+    else
+      break -- help/back/quit/anything else dismisses
     end
   end
   win:close()
