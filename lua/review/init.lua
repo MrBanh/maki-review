@@ -7,10 +7,11 @@
 --   * Comments — every review comment written so far (d deletes).
 --   * Right: syntax-highlighted diff of the selected file (previewed live),
 --     or the commit summary / comment detail for the other panels.
---   * Tab cycles the left panels; Enter/l focuses the diff, h/Esc goes back.
---     In the diff: `c` comments the current line, `v` selects a range first,
---     `d` deletes a comment.
+--   * Tab / S-Tab cycle the left panels; Enter/l focuses the diff, h/Esc
+--     goes back. In the diff: `c` comments the current line, `v` selects a
+--     range first, `d` deletes a comment. `?` lists the keybinds.
 --   * `s` submits all comments to a new focused maki session that fixes them.
+--   * Keys are customizable via setup({ keymaps = ... }); see README.
 --
 -- After every turn, a status flash reminds you when files changed.
 --
@@ -37,6 +38,144 @@ local COM_TINT = { "#e3b341", 0.22 }
 -- Entry: { file, text, anchor ("new"|"old"), new_start, new_end,
 --          old_start, old_end, snippet }
 local comments = {}
+
+--- keymaps -----------------------------------------------------------------
+
+-- Action -> default keys, in maki.keymap canonical notation. setup() takes
+-- either the flat form { cycle_forwards = "...", ... } or the nested form
+-- { keymaps = { cycle_forwards = "...", ... } }; each entry replaces the
+-- default for that action, anything not listed keeps its default. Value is
+-- one key or a list of keys. The ? popup and the panel footers always show
+-- the effective bindings.
+local DEFAULT_KEYS = {
+  cycle_forwards = { "<Tab>" },
+  cycle_backwards = { "<S-Tab>" },
+  help = { "?" },
+  open = { "<CR>" },
+  collapse = { "h" },
+  back = { "<Esc>" },
+  move_up = { "k" },
+  move_down = { "j" },
+  page_up = { "<PageUp>" },
+  page_down = { "<PageDown>" },
+  jump_top = { "g" },
+  jump_bottom = { "G" },
+  comment = { "c" },
+  range_select = { "v" },
+  delete_comment = { "d" },
+  submit = { "s" },
+  refresh = { "r" },
+  quit = { "q" },
+}
+
+-- Alternates that always work on top of whatever is configured.
+local FIXED_KEYS = {
+  open = { "l", "<Right>" },
+  collapse = { "<Left>" },
+  move_up = { "<Up>" },
+  move_down = { "<Down>" },
+  jump_top = { "<Home>" },
+  jump_bottom = { "<End>" },
+  quit = { "<C-c>" },
+}
+
+local KEYS = {}
+
+local function canon_key(k)
+  if maki.keymap and maki.keymap.normalize then
+    local ok, v = pcall(maki.keymap.normalize, k)
+    if ok and type(v) == "string" then
+      return v
+    end
+  end
+  return k
+end
+
+local function build_keys(opts)
+  -- Accept setup({ cycle_forwards = ... }) and setup({ keymaps = {...} }).
+  local keymaps = nil
+  if type(opts) == "table" then
+    if type(opts.keymaps) == "table" then
+      keymaps = opts.keymaps
+    else
+      for action in pairs(DEFAULT_KEYS) do
+        if opts[action] ~= nil then
+          keymaps = opts
+          break
+        end
+      end
+    end
+  end
+  KEYS = {}
+  for action, def in pairs(DEFAULT_KEYS) do
+    local v = keymaps and keymaps[action] or nil
+    if v == nil then
+      v = def
+    elseif type(v) == "string" then
+      v = { v }
+    end
+    local out = {}
+    if type(v) == "table" then
+      for _, k in ipairs(v) do
+        if type(k) == "string" and k ~= "" then
+          out[#out + 1] = canon_key(k)
+        end
+      end
+    end
+    if #out == 0 then
+      out = def -- ignore empty/invalid overrides, never unbind by accident
+    end
+    KEYS[action] = out
+  end
+end
+
+build_keys(nil)
+
+local function hit(action, key)
+  for _, k in ipairs(KEYS[action] or {}) do
+    if k == key then
+      return true
+    end
+  end
+  for _, k in ipairs(FIXED_KEYS[action] or {}) do
+    if k == key then
+      return true
+    end
+  end
+  return false
+end
+
+-- Configured keys for `action`, without the fixed alternates.
+local function configured(action, key)
+  for _, k in ipairs(KEYS[action] or {}) do
+    if k == key then
+      return true
+    end
+  end
+  return false
+end
+
+-- "<Tab>" -> "Tab", "?" -> "?".
+local function disp_key(k)
+  return k:match("^<(.*)>$") or k
+end
+
+local function key_label(action)
+  local k = (KEYS[action] or {})[1]
+  return k and disp_key(k) or ""
+end
+
+-- Every key that triggers the action, configured first, for the ? popup.
+local function key_list(action)
+  local out = {}
+  for _, k in ipairs(KEYS[action] or {}) do
+    out[#out + 1] = disp_key(k)
+  end
+  for _, k in ipairs(FIXED_KEYS[action] or {}) do
+    out[#out + 1] = disp_key(k)
+  end
+  return table.concat(out, " / ")
+end
 
 --- shell helpers -----------------------------------------------------------
 
@@ -433,7 +572,7 @@ end
 
 local function submit(state)
   if #comments == 0 then
-    maki.ui.flash("No review comments yet — press c on a diff line first")
+    maki.ui.flash("No review comments yet — press " .. key_label("comment") .. " on a diff line first")
     return false
   end
   local n = #comments
@@ -770,7 +909,7 @@ local function render_comment_list(state)
   local lines, row_map = {}, {}
   if #comments == 0 then
     lines[#lines + 1] = { { "  No comments yet.", "dim" } }
-    lines[#lines + 1] = { { "  Press c on a diff line.", "dim" } }
+    lines[#lines + 1] = { { "  Press " .. key_label("comment") .. " on a diff line.", "dim" } }
   end
   for i, c in ipairs(comments) do
     local ln = c.anchor == "old" and c.old_start or c.new_start
@@ -1090,7 +1229,7 @@ local function redraw(state)
     win:set_config({
       title = title,
       border = active and "double" or "rounded",
-      footer = active and footer or { { "Tab", "focus" } },
+      footer = active and footer or { { key_label("cycle_forwards"), "focus" } },
     })
   end
 
@@ -1099,19 +1238,20 @@ local function redraw(state)
     " Files (" .. #state.wchanges .. ") ",
     state.pane == "files" and not state.centry,
     {
-      { "Enter", "diff" },
-      { "s", "submit " .. #comments },
-      { "Esc", "close" },
+      { key_label("open"), "diff" },
+      { key_label("submit"), "submit " .. #comments },
+      { key_label("help"), "keys" },
+      { key_label("back"), "close" },
     }
   )
 
   local ctitle, cfooter
   if state.commit then
     ctitle = " " .. state.commit.sha .. " (" .. #(state.commit_changes or {}) .. ") "
-    cfooter = { { "Enter", "diff" }, { "Esc", "back" } }
+    cfooter = { { key_label("open"), "diff" }, { key_label("back"), "back" } }
   else
     ctitle = " Commits "
-    cfooter = { { "Enter", "open" }, { "Esc", "close" } }
+    cfooter = { { key_label("open"), "open" }, { key_label("back"), "close" } }
   end
   panel_cfg(
     state.cwin,
@@ -1125,8 +1265,8 @@ local function redraw(state)
     " Comments (" .. #comments .. ") ",
     state.pane == "comments" and not state.centry,
     {
-      { "d", "delete" },
-      { "s", "submit " .. #comments },
+      { key_label("delete_comment"), "delete" },
+      { key_label("submit"), "submit " .. #comments },
     }
   )
 
@@ -1151,12 +1291,12 @@ local function redraw(state)
     footer = state.centry
         and { { "Enter", "save" }, { "Esc", "cancel" } }
       or (diff_active and {
-        { "c", "comment" },
-        { "v", state.vstart and "cancel select" or "select" },
-        { "d", "delete" },
-        { "s", "submit " .. #comments },
-        { "Esc", "back" },
-      } or { { "Enter", "diff" } }),
+        { key_label("comment"), "comment" },
+        { key_label("range_select"), state.vstart and "cancel select" or "select" },
+        { key_label("delete_comment"), "delete" },
+        { key_label("submit"), "submit " .. #comments },
+        { key_label("back"), "back" },
+      } or { { key_label("open"), "diff" } }),
   })
 
   state.fwin:set_cursor(state.fcursor)
@@ -1255,6 +1395,7 @@ end
 --- pane switching ----------------------------------------------------------
 
 local PANE_NEXT = { files = "commits", commits = "comments", comments = "files" }
+local PANE_PREV = { files = "comments", commits = "files", comments = "commits" }
 
 local function set_pane(state, pane)
   if pane == "diff" and not state.dlines then
@@ -1419,7 +1560,13 @@ local function open_comment_editor(state)
   local at = state.drow_map[state.dcursor]
   local dl = state.dlines and state.dlines[at]
   if not dl or dl.kind == "hunk" then
-    maki.ui.flash("Move onto a diff line first (j/k)")
+    maki.ui.flash(
+      "Move onto a diff line first ("
+        .. key_label("move_down")
+        .. "/"
+        .. key_label("move_up")
+        .. ")"
+    )
     return
   end
 
@@ -1484,6 +1631,85 @@ local function delete_comment(state)
   else
     maki.ui.flash("No comment on this line")
   end
+end
+
+--- help popup ---------------------------------------------------------------
+
+local HELP_SECTIONS = {
+  { "Panels", {
+    { "cycle_forwards", "cycle panels forwards" },
+    { "cycle_backwards", "cycle panels backwards" },
+    { "open", "open dir / focus diff / open commit" },
+    { "collapse", "collapse dir / leave commit" },
+    { "back", "back / close" },
+  } },
+  { "Move", {
+    { "move_up", "up" },
+    { "move_down", "down" },
+    { "page_up", "page" },
+    { "page_down", "page" },
+    { "jump_top", "first row" },
+    { "jump_bottom", "last row" },
+  } },
+  { "Diff", {
+    { "comment", "comment on line / range" },
+    { "range_select", "start / cancel range select" },
+    { "delete_comment", "delete comment" },
+  } },
+  { "Review", {
+    { "submit", "send comments to a new session" },
+    { "refresh", "refresh" },
+    { "help", "this help" },
+    { "quit", "quit" },
+  } },
+}
+
+-- Centered modal listing the effective keybinds; any key dismisses it.
+local function show_help()
+  local rows = {}
+  local kw = 0
+  for _, sec in ipairs(HELP_SECTIONS) do
+    rows[#rows + 1] = { sec = sec[1] }
+    for _, item in ipairs(sec[2]) do
+      local keys = key_list(item[1])
+      kw = math.max(kw, #keys)
+      rows[#rows + 1] = { keys = keys, desc = item[2] }
+    end
+  end
+  local buf = maki.ui.buf({ scratch = true })
+  local width = 0
+  for _, r in ipairs(rows) do
+    if r.sec then
+      buf:line({ { " " .. r.sec, "warning" } })
+      width = math.max(width, #r.sec + 1)
+    else
+      buf:line({
+        { "   " .. r.keys .. string.rep(" ", kw - #r.keys) .. "  ", "accent" },
+        { r.desc, "item" },
+      })
+      width = math.max(width, kw + #r.desc + 5)
+    end
+  end
+  local term = maki.ui.terminal_size()
+  local win = maki.ui.open_win(buf, {
+    title = " Keys ",
+    width = math.min(width + 2, math.max(term.cols - 4, 20)),
+    height = math.min(#rows, math.max(term.rows - 4, 5)),
+    border = "rounded",
+    focus = true,
+    zindex = 90,
+    footer = { { key_label("help"), "close" } },
+  })
+  while win:is_open() do
+    local ev = win:recv()
+    if not ev then
+      break
+    end
+    if ev.type == "key" or ev.type == "close" then
+      break
+    end
+  end
+  win:close()
 end
 
 --- windows -----------------------------------------------------------------
@@ -1667,33 +1893,37 @@ run_review = function(state)
       continue
     end
 
-    if key == "<Up>" or key == "k" then
+    if hit("move_up", key) then
       move(state, -1)
-    elseif key == "<Down>" or key == "j" then
+    elseif hit("move_down", key) then
       move(state, 1)
-    elseif key == "<PageUp>" then
+    elseif hit("page_up", key) then
       move(state, -1, math.max(active_height(state) - 2, 1))
-    elseif key == "<PageDown>" then
+    elseif hit("page_down", key) then
       move(state, 1, math.max(active_height(state) - 2, 1))
-    elseif key == "g" or key == "<Home>" then
+    elseif hit("jump_top", key) then
       jump(state, false)
-    elseif key == "G" or key == "<End>" then
+    elseif hit("jump_bottom", key) then
       jump(state, true)
-    elseif key == "<Tab>" then
+    elseif hit("cycle_forwards", key) then
       set_pane(state, state.pane == "diff" and state.src or PANE_NEXT[state.pane])
-    elseif key == "s" then
+    elseif hit("cycle_backwards", key) then
+      set_pane(state, state.pane == "diff" and state.src or PANE_PREV[state.pane])
+    elseif hit("help", key) then
+      show_help()
+    elseif hit("submit", key) then
       if submit(state) then
         return
       end
       redraw(state)
-    elseif key == "q" or key == "<C-c>" then
+    elseif hit("quit", key) then
       break
     elseif state.pane ~= "diff" then -- one of the left panels
-      if key == "<CR>" or key == "l" or key == "<Right>" then
+      if hit("open", key) then
         if state.pane == "commits" and not state.commit then
           enter_commit(state)
         elseif state.pane == "comments" then
-          maki.ui.flash("d deletes the selected comment")
+          maki.ui.flash(key_label("delete_comment") .. " deletes the selected comment")
         else
           local cursor, row_map = active_view(state)
           local sel = row_map[cursor]
@@ -1703,11 +1933,11 @@ run_review = function(state)
             set_pane(state, "diff")
           end
         end
-      elseif key == "d" and state.pane == "comments" then
+      elseif hit("delete_comment", key) and state.pane == "comments" then
         delete_selected_comment(state)
-      elseif key == "r" then
+      elseif hit("refresh", key) then
         refresh(state)
-      elseif key == "h" or key == "<Left>" then
+      elseif hit("collapse", key) then
         local cursor, row_map = active_view(state)
         local sel = row_map[cursor]
         local set = state.pane == "commits" and state.ccollapsed
@@ -1722,7 +1952,7 @@ run_review = function(state)
         elseif state.pane == "commits" and state.commit then
           leave_commit(state)
         end
-      elseif key == "<Esc>" then
+      elseif hit("back", key) then
         if state.pane == "commits" and state.commit then
           leave_commit(state)
         else
@@ -1730,9 +1960,9 @@ run_review = function(state)
         end
       end
     else -- diff pane
-      if key == "c" or key == "<CR>" then
+      if hit("comment", key) or configured("open", key) then
         open_comment_editor(state)
-      elseif key == "v" then
+      elseif hit("range_select", key) then
         if state.vstart then
           state.vstart = nil
         else
@@ -1740,9 +1970,9 @@ run_review = function(state)
           state.vcur = state.vstart
         end
         redraw(state)
-      elseif key == "d" then
+      elseif hit("delete_comment", key) then
         delete_comment(state)
-      elseif key == "h" or key == "<Left>" or key == "<Esc>" then
+      elseif hit("back", key) or hit("collapse", key) then
         if state.vstart then
           state.vstart = nil
           redraw(state)
@@ -1772,14 +2002,18 @@ local last_sig = nil
 -- Called once by the package loader: the maki.pack.add custom loader in
 -- the user config calls require("review").setup(), and plugin/review.lua
 -- calls it for hand-installed copies. Guarded so a double-load registers
--- the /review command and the TurnEnd nudge exactly once. Takes no
--- options; upstream review.lua has no configurable bits.
+-- the /review command and the TurnEnd nudge exactly once. Takes optional
+-- key overrides in the flat form: setup({ cycle_forwards = "<Tab>", ... })
+-- or nested as setup({ keymaps = { ... } }); anything not listed keeps its
+-- default (see DEFAULT_KEYS). A managed install that customizes keys uses a
+-- custom loader (see README) to pass them in.
 local registered = false
-function M.setup()
+function M.setup(opts)
   if registered then
     return
   end
   registered = true
+  build_keys(opts)
 
   maki.api.register_command({
     name = "/review",
