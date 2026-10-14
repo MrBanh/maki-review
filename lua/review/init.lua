@@ -31,8 +31,13 @@ local NO_CHANGES = "  Working tree clean."
 -- Blend fractions for diff line background tints.
 local ADD_TINT = { "#3fb950", 0.18 }
 local DEL_TINT = { "#f85149", 0.18 }
-local SEL_TINT = { "#58a6ff", 0.30 }
+local SEL_TINT = { "#58a6ff", 0.38 }
 local COM_TINT = { "#e3b341", 0.22 }
+
+-- Gutter marker on range-selected rows, so the selection reads even when
+-- the theme cannot show a background wash. Mirrors the ▎ marker used for
+-- inactive-panel selections (see push in render_change_list).
+local SEL_MARK = "▎"
 
 -- One shared comment store per maki process, survives window close/reopen.
 -- Entry: { file, text, anchor ("new"|"old"), new_start, new_end,
@@ -730,9 +735,9 @@ local function copy_mods(dst, src)
   return dst
 end
 
--- Returns copies of `spans` with `bg` added to each span's style,
--- keeping syntax foreground colors (and named styles' foregrounds, so the
--- +/- markers keep their diff colors under the wash).
+-- Returns copies of `spans` with `bg` added to each span's style. Keeps
+-- syntax and named-style foregrounds (so +/- markers keep their colors
+-- under a wash).
 local function with_bg(spans, bg)
   local out = {}
   for _, sp in ipairs(spans) do
@@ -744,6 +749,32 @@ local function with_bg(spans, bg)
       local st = resolve_style(s)
       if st then
         copy_mods(ns, st)
+      end
+    end
+    out[#out + 1] = { sp[1], ns }
+  end
+  return out
+end
+
+-- Recolors every span's foreground to `fg`, keeping other modifiers.
+-- Gives selected rows their own hue on fg-only themes.
+local function with_sel_fg(spans, fg)
+  local out = {}
+  for _, sp in ipairs(spans) do
+    local s = sp[2]
+    local ns = { fg = fg }
+    if type(s) == "table" then
+      ns.bg = s.bg
+      ns.bold = s.bold
+      ns.italic = s.italic
+      ns.underline = s.underline
+    elseif type(s) == "string" and s ~= "" then
+      local st = resolve_style(s)
+      if st then
+        ns.bg = st.bg
+        ns.bold = st.bold
+        ns.italic = st.italic
+        ns.underline = st.underline
       end
     end
     out[#out + 1] = { sp[1], ns }
@@ -1121,7 +1152,7 @@ local function render_diff(state)
     end
 
     local spans = {
-      { c and COMMENT_MARK or "  ", "warning" },
+      { (selected and SEL_MARK or " ") .. (c and COMMENT_MARK or " "), "warning" },
       { string.format("%4d ", ln or 0), "dim" },
       { sign .. " ", base },
     }
@@ -1144,9 +1175,31 @@ local function render_diff(state)
     end
     if tint_bg then
       spans = with_bg(spans, tint_bg)
-      pad_spans(spans, width, { bg = tint_bg })
+      -- Selected rows layer the selection wash over the kind wash so they
+      -- never read as plain adds/dels; tint_fg (when present) recolors the
+      -- foregrounds so the selection keeps its own hue on fg-only themes.
+      if selected then
+        local sw = sel_bg
+        if sw then
+          spans = with_bg(spans, sw)
+          pad_spans(spans, width, { bg = sw })
+        else
+          pad_spans(spans, width, { bg = tint_bg })
+        end
+        if sel_fg then
+          spans = with_sel_fg(spans, sel_fg)
+        end
+      else
+        pad_spans(spans, width, { bg = tint_bg })
+      end
     elseif tint_fg then
       spans = with_fg(spans, tint_fg)
+      if selected then
+        if sel_fg then
+          spans = with_sel_fg(spans, sel_fg)
+        end
+        -- No wash available: the gutter marker + footer carry it.
+      end
     else
       -- No tint channels on this theme: strip intrinsic span backgrounds
       -- so the row stays uniform instead of tinting just the line number.
