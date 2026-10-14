@@ -46,15 +46,18 @@ package with
 maki.pack.add({
   {
     src = "https://github.com/MrBanh/maki-review",
+    version = "v0.1.0",
   },
 })
 ```
 
 Maki shows one install prompt on the terminal before the UI starts and writes
 the selected commit to `pack-lock.json` in your config directory — commit that
-file to pin the same revision on other machines. See
-[Lua packages](https://maki.sh/docs/packages/) for `version` pins,
-`/packupdate`, and `/packdel`.
+file to pin the same revision on other machines. `version` pins the release;
+omit it to track the default branch. Once locked, the lockfile wins over
+`version`: to move to a newer release, delete the `maki-review` entry from
+`pack-lock.json` or run `/packupdate maki-review`. See
+[Lua packages](https://maki.sh/docs/packages/) for details.
 
 By hand instead: clone this repo into
 `<maki-data>/site/pack/<group>/start/maki-review/` (any `<group>` except
