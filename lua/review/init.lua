@@ -84,7 +84,11 @@ local function get_tints()
     return tints
   end
   local bg = maki.ui.theme_color("background")
-  if not bg then
+  -- Non-truecolor themes answer "default" or a palette index ("4") rather
+  -- than "#rrggbb", which hex_rgb cannot parse (nil channels crash blend
+  -- and strand the windows). Tints are decorative and every use tolerates
+  -- nil, so skip them on such themes.
+  if type(bg) ~= "string" or not bg:match("^#%x%x%x%x%x%x$") then
     tints = {}
     return tints
   end
@@ -1563,6 +1567,11 @@ end
 
 --- main loop ---------------------------------------------------------------
 
+-- Forward declaration: open_review pcall's run_review so a mid-review error
+-- still closes the windows instead of stranding them on screen with nobody
+-- draining their keys.
+local run_review
+
 local function open_review()
   local changes, err = git_changes()
   if not changes then
@@ -1591,6 +1600,18 @@ local function open_review()
     ccollapsed = {},
     cache = {},
   }
+  local ok, run_err = pcall(run_review, state)
+  for _, w in ipairs({ "fwin", "cwin", "mwin", "rwin" }) do
+    if state[w] then
+      state[w]:close()
+    end
+  end
+  if not ok then
+    error(run_err, 0)
+  end
+end
+
+run_review = function(state)
   open_windows(state)
   redraw(state) -- build row maps before the first preview
   for r = 1, state.fbuf:len() do
@@ -1729,12 +1750,6 @@ local function open_review()
           set_pane(state, state.src)
         end
       end
-    end
-  end
-
-  for _, w in ipairs({ "fwin", "cwin", "mwin", "rwin" }) do
-    if state[w] then
-      state[w]:close()
     end
   end
 end
